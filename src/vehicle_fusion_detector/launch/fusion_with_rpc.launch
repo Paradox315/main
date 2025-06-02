@@ -1,0 +1,27 @@
+<launch>
+    <!-- RPC Server Parameters -->
+    <arg name="rpc_host" default="localhost" />
+    <arg name="rpc_port" default="8000" />
+    
+    <!-- Start RPC Matching Server as a standalone process (not a ROS node) -->
+    <node pkg="vehicle_fusion_detector" type="matching_rpc_server.py" name="matching_rpc_server" 
+          output="screen" args="--host $(arg rpc_host) --port $(arg rpc_port)" required="true">
+        <!-- Remove ROS-specific parameters that cause conflicts -->
+    </node>
+    
+    <!-- Wait a bit for RPC server to start up -->
+    <node pkg="vehicle_fusion_detector" type="delay_node.py" name="startup_delay" 
+          args="3" output="screen" if="false"/>
+    
+    <node pkg="vehicle_fusion_detector" type="own_sensor_detector.py" name="own_sensor_detector" output="screen"/>
+    <node pkg="vehicle_fusion_detector" type="other_vehicle_detector.py" name="other_vehicle_detector" output="screen"/>
+    
+    <!-- Start Detection Fusion Node -->
+    <node pkg="vehicle_fusion_detector" type="fusion_node.py" name="detection_fuser_node" output="screen">
+        <param name="rpc_host" value="$(arg rpc_host)" />
+        <param name="rpc_port" value="$(arg rpc_port)" />
+        <param name="rpc_timeout" value="5.0" />
+        <!-- Add delay to ensure RPC server starts first -->
+        <param name="startup_delay" value="3.0" />
+    </node>
+</launch>

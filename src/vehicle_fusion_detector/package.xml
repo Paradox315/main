@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>vehicle_fusion_detector</name>
+  <version>0.1.0</version>
+  <description>
+    A ROS package to demonstrate vehicle detection fusion using the Hungarian algorithm.
+    It includes nodes for simulating own detections, other vehicle detections,
+    and a fusion node to associate these detections.
+  </description>
+
+  <maintainer email="your_email@example.com">Your Name</maintainer>
+  <license>Apache 2.0</license> <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>rospy</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>message_generation</build_depend>
+  
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>message_runtime</exec_depend>
+  <doc_depend>python3-scipy</doc_depend>
+  <doc_depend>python3-numpy</doc_depend>
+
+  <export>
+    </export>
+</package>

@@ -1,0 +1,57 @@
+# ROS
+build/
+devel/
+logs/
+install/
+*.bag
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Virtualenv
+.env
+.venv
+env/
+venv/
+ENV/
+VENV/
+
+# Distribution / packaging
+.Python
+# build/  (already covered by ROS)
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+.installed.cfg
+*.egg-info/
+*.egg
+MANIFEST
+
+# PyCharm
+.idea/
+
+# VSCode
+.vscode/
+
+# Vim
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db

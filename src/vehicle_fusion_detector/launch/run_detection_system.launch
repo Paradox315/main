@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="vehicle_fusion_detector" type="own_sensor_detector.py" name="own_sensor_detector" output="screen"/>
+  <node pkg="vehicle_fusion_detector" type="other_vehicle_detector.py" name="other_vehicle_detector" output="screen"/>
+  <node pkg="vehicle_fusion_detector" type="fusion_node.py" name="detection_fuser_node" output="screen"/>
+</launch>
