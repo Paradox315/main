@@ -1,0 +1,45 @@
+<launch>
+    <!-- RPC Server Parameters -->
+    <arg name="rpc_host" default="localhost" />
+    <arg name="rpc_port" default="8000" />
+    
+    <!-- Rosbag Parameters -->
+    <arg name="own_bag_file" default="/home/huyaowen/output1.bag" />
+    <arg name="other_bag_file" default="/home/huyaowen/output2.bag" />
+    <arg name="own_input_topic" default="/detection" />
+    <arg name="other_input_topic" default="/detection" />
+    
+    <!-- Start RPC Matching Server -->
+    <node pkg="vehicle_fusion_detector" type="matching_rpc_server.py" 
+          name="matching_rpc_server" output="screen" 
+          args="--host $(arg rpc_host) --port $(arg rpc_port)" required="true"/>
+    
+    <!-- Own Vehicle Detector from Rosbag -->
+    <node pkg="vehicle_fusion_detector" type="own_sensor_detector.py" 
+          name="own_sensor_detector" output="screen">
+        <param name="bag_file" value="$(arg own_bag_file)" />
+        <param name="input_topic" value="$(arg own_input_topic)" />
+        <param name="vehicle_id" value="vehicle_A" />
+        <param name="publish_rate" value="1.2" />
+        <param name="loop_playback" value="true" />
+    </node>
+    
+    <!-- Other Vehicle Detector from Rosbag -->
+    <node pkg="vehicle_fusion_detector" type="other_vehicle_detector.py" 
+          name="other_vehicle_detector" output="screen">
+        <param name="bag_file" value="$(arg other_bag_file)" />
+        <param name="input_topic" value="$(arg other_input_topic)" />
+        <param name="vehicle_id" value="vehicle_B" />
+        <param name="publish_rate" value="1.0" />
+        <param name="loop_playback" value="true" />
+    </node>
+    
+    <!-- Start Detection Fusion Node -->
+    <node pkg="vehicle_fusion_detector" type="fusion_node.py" 
+          name="detection_fuser_node" output="screen">
+        <param name="rpc_host" value="$(arg rpc_host)" />
+        <param name="rpc_port" value="$(arg rpc_port)" />
+        <param name="rpc_timeout" value="5.0" />
+        <param name="vehicle_id" value="vehicle_A" />
+    </node>
+</launch>

@@ -180,7 +180,12 @@ def graph_matching_assignment(ego_preds, cav_preds, mathod="rrwm"):
     # Create a boolean mask for values with abs(zscore) <= 2
     mask = np.abs(affinities) <= 2
 
-    return ego_ids[mask], cav_ids[mask]
+    ego_ids = ego_ids[mask]
+    cav_ids = cav_ids[mask]
+    valid_matches = []
+    for i, j in zip(ego_ids, cav_ids):
+        valid_matches.append((i, j))
+    return valid_matches
 
 
 def convert_detections_to_preds(detections_list, detection_id_offset=0):

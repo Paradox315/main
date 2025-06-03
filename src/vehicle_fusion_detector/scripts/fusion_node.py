@@ -18,19 +18,8 @@ from demoros2.msg import Detections, DetectionsWithOdom  # 使用demoros2包中�
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
+GRAPH_MATCHING_AVAILABLE = True
 
-try:
-    from graph_matching import (
-        convert_detections_to_preds,
-        graph_matching_assignment,
-    )
-
-    GRAPH_MATCHING_AVAILABLE = True
-except ImportError as e:
-    rospy.logwarn(
-        f"Graph matching module not available: {e}. Using traditional matching only."
-    )
-    GRAPH_MATCHING_AVAILABLE = False
 
 # --- 配置参数 ---
 IOU_THRESHOLD = 0.3
