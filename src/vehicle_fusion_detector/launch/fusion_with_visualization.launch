@@ -1,0 +1,66 @@
+<launch>
+    <!-- RPC Server Parameters -->
+    <arg name="rpc_host" default="localhost" />
+    <arg name="rpc_port" default="8000" />
+    
+    <!-- Visualization Parameters -->
+    <arg name="image_width" default="1200" />
+    <arg name="image_height" default="800" />
+    <arg name="scale_factor" default="15.0" />
+    <arg name="save_images" default="true" />
+    <arg name="save_path" default="/home/huyaowen/catkin_ws/visualization_output" />
+    <arg name="use_web_viewer" default="true" />
+    <arg name="web_port" default="8080" />
+    
+    <!-- Start RPC Matching Server -->
+    <node pkg="vehicle_fusion_detector" type="matching_rpc_server.py" 
+          name="matching_rpc_server" output="screen" 
+          args="--host $(arg rpc_host) --port $(arg rpc_port)" required="true"/>
+    
+    <!-- Own Vehicle Detector -->
+    <node pkg="vehicle_fusion_detector" type="own_sensor_detector.py" 
+          name="own_sensor_detector" output="screen">
+        <param name="bag_file" value="/home/huyaowen/output1.bag" />
+        <param name="input_topic" value="/detection" />
+        <param name="vehicle_id" value="vehicle_A" />
+        <param name="publish_rate" value="1.2" />
+        <param name="loop_playback" value="true" />
+    </node>
+    
+    <!-- Other Vehicle Detector -->
+    <node pkg="vehicle_fusion_detector" type="other_vehicle_detector.py" 
+          name="other_vehicle_detector" output="screen">
+        <param name="vehicle_id" value="vehicle_B" />
+        <param name="publish_rate" value="1.0" />
+        <param name="loop_playback" value="true" />
+    </node>
+    
+    <!-- Start Detection Fusion Node -->
+    <node pkg="vehicle_fusion_detector" type="fusion_node.py" 
+          name="detection_fuser_node" output="screen">
+        <param name="rpc_host" value="$(arg rpc_host)" />
+        <param name="rpc_port" value="$(arg rpc_port)" />
+        <param name="rpc_timeout" value="5.0" />
+        <param name="vehicle_id" value="vehicle_A" />
+    </node>
+    
+    <!-- Start Detection Visualizer with file saving -->
+    <node pkg="vehicle_fusion_detector" type="detection_visualizer.py" 
+          name="detection_visualizer" output="screen">
+        <param name="image_width" value="$(arg image_width)" />
+        <param name="image_height" value="$(arg image_height)" />
+        <param name="scale_factor" value="$(arg scale_factor)" />
+        <param name="save_images" value="$(arg save_images)" />
+        <param name="save_path" value="$(arg save_path)" />
+        <param name="save_interval" value="1.0" />
+    </node>
+    
+    <!-- Start Simple Image Viewer -->
+    <node pkg="vehicle_fusion_detector" type="simple_image_viewer.py" 
+          name="simple_image_viewer" output="screen">
+        <param name="image_dir" value="$(arg save_path)" />
+        <param name="check_interval" value="2.0" />
+        <param name="use_web_viewer" value="$(arg use_web_viewer)" />
+        <param name="web_port" value="$(arg web_port)" />
+    </node>
+</launch>

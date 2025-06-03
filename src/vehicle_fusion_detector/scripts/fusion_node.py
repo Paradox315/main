@@ -9,7 +9,8 @@ import message_filters  # 用于同步消息
 import numpy as np
 import requests
 import rospy
-from scipy.optimize import linear_sum_assignment
+from geometry_msgs.msg import Point
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 
 from demoros2.msg import Detections, DetectionsWithOdom  # 使用demoros2包中的消息
@@ -55,6 +56,11 @@ class DetectionFuser:
         self.rpc_base_url = f"http://{RPC_SERVER_HOST}:{RPC_SERVER_PORT}"
         self.rpc_session = requests.Session()
         self.rpc_session.timeout = RPC_TIMEOUT
+
+        # 发布器 - 添加融合检测结果发布器
+        self.fused_pub = rospy.Publisher(
+            "fused_detections", DetectionsWithOdom, queue_size=10
+        )
 
         self.other_detections_buffer = collections.defaultdict(
             lambda: collections.deque(maxlen=OTHER_DETECTIONS_BUFFER_SIZE)
@@ -170,7 +176,7 @@ class DetectionFuser:
             if not source_id or source_id == self.current_vehicle_id:
                 rospy.logwarn_throttle(
                     10,
-                    f"Ignoring other_vehicle_detections from self or with no source_id in sync callback.",
+                    "Ignoring other_vehicle_detections from self or with no source_id in sync callback.",
                 )
             else:
                 rospy.logdebug(
@@ -310,6 +316,152 @@ class DetectionFuser:
                     f"Traditional matching attempted for {other_vehicle_id} with {num_own} own detections and {num_other} other detections."
                 )
 
+    def fuse_detections(self, own_det, other_det):
+        """根据置信度加权融合两个检测框"""
+        own_conf = own_det.confidence
+        other_conf = other_det.confidence
+        total_conf = own_conf + other_conf
+
+        if total_conf == 0:
+            weight_own = 0.5
+            weight_other = 0.5
+        else:
+            weight_own = own_conf / total_conf
+            weight_other = other_conf / total_conf
+
+        # 创建融合后的检测
+        fused_det = Detections()
+        fused_det.object_id = f"fused_{own_det.object_id}_{other_det.object_id}"
+        fused_det.type = own_det.type  # 假设类型相同
+        fused_det.confidence = max(own_conf, other_conf)  # 使用更高的置信度
+
+        # 融合3D位置
+        fused_det.position = Point(
+            x=weight_own * own_det.position.x + weight_other * other_det.position.x,
+            y=weight_own * own_det.position.y + weight_other * other_det.position.y,
+            z=weight_own * own_det.position.z + weight_other * other_det.position.z,
+        )
+
+        # 融合2D边界框
+        fused_det.box_2d = [
+            int(weight_own * own_det.box_2d[0] + weight_other * other_det.box_2d[0]),
+            int(weight_own * own_det.box_2d[1] + weight_other * other_det.box_2d[1]),
+            int(weight_own * own_det.box_2d[2] + weight_other * other_det.box_2d[2]),
+            int(weight_own * own_det.box_2d[3] + weight_other * other_det.box_2d[3]),
+        ]
+
+        # 融合3D边界框
+        fused_det.bbox_3d = [
+            weight_own * own_det.bbox_3d[i] + weight_other * other_det.bbox_3d[i]
+            for i in range(6)
+        ]
+
+        return fused_det
+
+    def publish_fused_detections(self, fused_detections, timestamp):
+        """发布融合后的检测结果"""
+        if not fused_detections:
+            return
+
+        fused_msg = DetectionsWithOdom()
+        fused_msg.header = Header(stamp=timestamp, frame_id="world")
+        fused_msg.car_id = f"{self.current_vehicle_id}_fused"
+
+        # 创建默认里程计数据
+        from geometry_msgs.msg import Pose, Quaternion, Twist, Vector3
+
+        odom = Odometry()
+        odom.header = Header(stamp=timestamp, frame_id="world")
+        odom.child_frame_id = "base_link"
+        odom.pose.pose = Pose(
+            position=Point(x=0, y=0, z=0),
+            orientation=Quaternion(x=0, y=0, z=0, w=1),
+        )
+        odom.twist.twist = Twist()
+        fused_msg.odom = odom
+
+        fused_msg.detections = fused_detections
+        self.fused_pub.publish(fused_msg)
+
+    def notify_visualizer_matches(self, vehicle_id, matches):
+        """通知可视化器匹配结果"""
+        try:
+            # 尝试导入并获取可视化器实例
+            from detection_visualizer import get_visualizer
+
+            visualizer = get_visualizer()
+            visualizer.update_matches(vehicle_id, matches)
+        except Exception as e:
+            rospy.logdebug(f"Could not update visualizer matches: {e}")
+
+    def _traditional_matching_approach(
+        self, own_dets_list, other_dets_list, other_vehicle_id
+    ):
+        """
+        使用传统的IoU/距离匹配方法 - 通过RPC调用
+        """
+        result = self._call_rpc_matching(
+            "traditional_matching", own_dets_list, other_dets_list, other_vehicle_id
+        )
+
+        if result is None:
+            rospy.logwarn(
+                f"Traditional matching RPC failed for {other_vehicle_id}. Skipping matching."
+            )
+            return
+
+        if not result.get("success", False):
+            error_msg = result.get("error_message", "Unknown error")
+            rospy.logwarn(
+                f"Traditional matching failed for {other_vehicle_id}: {error_msg}"
+            )
+            return
+
+        matches = result.get("matches", [])
+
+        rospy.loginfo(
+            f"--- Traditional Matching Results for Own vs {other_vehicle_id} ---"
+        )
+
+        # 生成融合检测结果
+        fused_detections = []
+        for original_own_idx, original_other_idx in matches:
+            if original_own_idx < len(own_dets_list) and original_other_idx < len(
+                other_dets_list
+            ):
+                own_det_orig = own_dets_list[original_own_idx]
+                other_det_orig = other_dets_list[original_other_idx]
+
+                # 计算度量值用于日志显示
+                if USE_IOU_FOR_COST:
+                    metric_value = self._calculate_iou(own_det_orig, other_det_orig)
+                else:
+                    metric_value = self._calculate_center_distance(
+                        own_det_orig, other_det_orig
+                    )
+
+                rospy.loginfo(
+                    f"  TRADITIONAL MATCH: OwnDet_Orig[{original_own_idx}] (ID:{own_det_orig.object_id}, {own_det_orig.type}@{own_det_orig.confidence:.2f}) "
+                    f"<-> {other_vehicle_id} Det_Orig[{original_other_idx}] (ID:{other_det_orig.object_id}, {other_det_orig.type}@{other_det_orig.confidence:.2f}). "
+                    f"Metric Value: {metric_value:.2f}"
+                )
+
+                # 生成融合检测
+                fused_det = self.fuse_detections(own_det_orig, other_det_orig)
+                fused_detections.append(fused_det)
+
+        # 发布融合结果
+        if fused_detections:
+            self.publish_fused_detections(fused_detections, rospy.Time.now())
+            rospy.loginfo(
+                f"Published {len(fused_detections)} fused detections for {other_vehicle_id}"
+            )
+
+        # 通知可视化器匹配结果
+        self.notify_visualizer_matches(other_vehicle_id, matches)
+
+        rospy.loginfo("----------------------------------------------------")
+
     def _graph_matching_approach(
         self, own_dets_list, other_dets_list, other_vehicle_id
     ):
@@ -343,6 +495,8 @@ class DetectionFuser:
 
         rospy.loginfo(f"--- Graph Matching Results for Own vs {other_vehicle_id} ---")
 
+        # 生成融合检测结果
+        fused_detections = []
         for own_idx, other_idx in matches:
             if own_idx < len(own_dets_list) and other_idx < len(other_dets_list):
                 own_det = own_dets_list[own_idx]
@@ -352,58 +506,19 @@ class DetectionFuser:
                     f"<-> {other_vehicle_id} Det[{other_idx}] (ID:{other_det.object_id}, {other_det.type}@{other_det.confidence:.2f}). "
                 )
 
-        rospy.loginfo("----------------------------------------------------")
+                # 生成融合检测
+                fused_det = self.fuse_detections(own_det, other_det)
+                fused_detections.append(fused_det)
 
-    def _traditional_matching_approach(
-        self, own_dets_list, other_dets_list, other_vehicle_id
-    ):
-        """
-        使用传统的IoU/距离匹配方法 - 通过RPC调用
-        """
-        result = self._call_rpc_matching(
-            "traditional_matching", own_dets_list, other_dets_list, other_vehicle_id
-        )
-
-        if result is None:
-            rospy.logwarn(
-                f"Traditional matching RPC failed for {other_vehicle_id}. Skipping matching."
+        # 发布融合结果
+        if fused_detections:
+            self.publish_fused_detections(fused_detections, rospy.Time.now())
+            rospy.loginfo(
+                f"Published {len(fused_detections)} fused detections for {other_vehicle_id}"
             )
-            return
 
-        if not result.get("success", False):
-            error_msg = result.get("error_message", "Unknown error")
-            rospy.logwarn(
-                f"Traditional matching failed for {other_vehicle_id}: {error_msg}"
-            )
-            return
-
-        matches = result.get("matches", [])
-
-        rospy.loginfo(
-            f"--- Traditional Matching Results for Own vs {other_vehicle_id} ---"
-        )
-
-        for original_own_idx, original_other_idx in matches:
-            if original_own_idx < len(own_dets_list) and original_other_idx < len(
-                other_dets_list
-            ):
-                own_det_orig = own_dets_list[original_own_idx]
-                other_det_orig = other_dets_list[original_other_idx]
-
-                # 计算度量值用于日志显示
-                if USE_IOU_FOR_COST:
-                    metric_value = self._calculate_iou(own_det_orig, other_det_orig)
-                else:
-                    metric_value = self._calculate_center_distance(
-                        own_det_orig, other_det_orig
-                    )
-
-                rospy.loginfo(
-                    f"  TRADITIONAL MATCH: OwnDet_Orig[{original_own_idx}] (ID:{own_det_orig.object_id}, {own_det_orig.type}@{own_det_orig.confidence:.2f}) "
-                    f"<-> {other_vehicle_id} Det_Orig[{original_other_idx}] (ID:{other_det_orig.object_id}, {other_det_orig.type}@{other_det_orig.confidence:.2f}). "
-                    f"Metric Value: {metric_value:.2f}"
-                )
-                # TODO: 后续处理匹配对 (original_own_idx, original_other_idx)
+        # 通知可视化器匹配结果
+        self.notify_visualizer_matches(other_vehicle_id, matches)
 
         rospy.loginfo("----------------------------------------------------")
 

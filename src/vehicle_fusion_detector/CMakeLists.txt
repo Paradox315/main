@@ -38,6 +38,7 @@ catkin_install_python(PROGRAMS
   scripts/other_vehicle_detector.py
   scripts/fusion_node.py
   scripts/matching_rpc_server.py
+  scripts/detection_visualizer.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

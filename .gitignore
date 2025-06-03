@@ -55,3 +55,4 @@ MANIFEST
 # OS generated files
 .DS_Store
 Thumbs.db
+visualization_output/
