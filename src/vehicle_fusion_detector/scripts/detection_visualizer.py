@@ -3,9 +3,14 @@
 import os
 from datetime import datetime
 
-import cv2
+import matplotlib
+
+matplotlib.use("Agg")  # 使用非交互式后端
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 import numpy as np
 import rospy
+from matplotlib.patches import Rectangle
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
@@ -26,9 +31,10 @@ class DetectionVisualizer:
         rospy.init_node("detection_visualizer", anonymous=True)
 
         # 参数配置
-        self.image_width = rospy.get_param("~image_width", 1200)
-        self.image_height = rospy.get_param("~image_height", 800)
-        self.scale_factor = rospy.get_param("~scale_factor", 15.0)  # 坐标缩放因子
+        self.figure_width = rospy.get_param("~figure_width", 20)
+        self.figure_height = rospy.get_param("~figure_height", 8)
+        self.plot_range = rospy.get_param("~plot_range", 50.0)  # 绘图范围（米）
+        self.dpi = rospy.get_param("~dpi", 100)
 
         # 新增参数：是否保存图像文件
         self.save_images = rospy.get_param("~save_images", True)
@@ -36,6 +42,14 @@ class DetectionVisualizer:
             "~save_path", "/home/huyaowen/catkin_ws/visualization_output"
         )
         self.save_interval = rospy.get_param("~save_interval", 1.0)  # 保存间隔（秒）
+
+        # 新增参数：融合结果检查
+        self.require_fused_results = rospy.get_param(
+            "~require_fused_results", True
+        )  # 是否要求融合结果不为空
+        self.wait_for_fusion_timeout = rospy.get_param(
+            "~wait_for_fusion_timeout", 5.0
+        )  # 等待融合结果的超时时间（秒）
 
         # 创建保存目录
         if self.save_images:
@@ -58,6 +72,10 @@ class DetectionVisualizer:
         self.fused_detections = []
         self.current_matches = {}  # {vehicle_id: [(own_idx, other_idx), ...]}
 
+        # 融合结果状态跟踪
+        self.last_fused_update_time = rospy.Time.now()
+        self.has_received_fused_data = False
+
         # 图像保存计数器
         self.image_counter = 0
         self.last_save_time = rospy.Time.now()
@@ -75,34 +93,32 @@ class DetectionVisualizer:
             "fused_detections", DetectionsWithOdom, self.fused_detections_callback
         )
 
-        # 颜色定义
+        # 颜色定义 - 使用matplotlib颜色格式
         self.colors = {
-            "own": (0, 255, 0),  # 绿色 - 自车检测
-            "other": (0, 0, 255),  # 红色 - 他车检测
-            "matched": (255, 0, 255),  # 紫色 - 匹配的检测
-            "fused": (0, 255, 255),  # 青色 - 融合后的检测
-            "text": (255, 255, 255),  # 白色 - 文字
-            "background": (50, 50, 50),  # 深灰色 - 背景
+            "own": "#00AA00",  # 深绿色 - 自车检测
+            "fused": "#0080FF",  # 蓝色 - 融合后的检测
+            "background": "#F8F8F8",  # 浅灰色背景
         }
+
+        # 为不同车辆ID分配不同颜色 - 更丰富的颜色搭配
+        self.vehicle_colors = [
+            "#FF4444",  # 红色
+            "#FF8800",  # 橙色
+            "#8800FF",  # 紫色
+            "#FF4488",  # 粉红色
+            "#BB4400",  # 棕色
+            "#44FF44",  # 亮绿色
+            "#4444FF",  # 蓝色
+            "#FFAA00",  # 黄橙色
+        ]
 
         # 定时器 - 定期生成可视化
         self.vis_timer = rospy.Timer(rospy.Duration(0.2), self.generate_visualization)
 
-        rospy.loginfo("Detection Visualizer initialized")
+        rospy.loginfo("Detection Visualizer initialized with 3-subplot layout")
         rospy.loginfo(f"Save images: {self.save_images}")
-        rospy.loginfo(f"Image size: {self.image_width}x{self.image_height}")
-
-    def cv2_to_imgmsg_manual(self, cv_image, encoding="bgr8"):
-        """手动将OpenCV图像转换为ROS Image消息（当cv_bridge不可用时）"""
-        img_msg = Image()
-        img_msg.header = Header(stamp=rospy.Time.now(), frame_id="visualization")
-        img_msg.height = cv_image.shape[0]
-        img_msg.width = cv_image.shape[1]
-        img_msg.encoding = encoding
-        img_msg.is_bigendian = 0
-        img_msg.step = cv_image.shape[1] * cv_image.shape[2]
-        img_msg.data = cv_image.tobytes()
-        return img_msg
+        rospy.loginfo(f"Figure size: {self.figure_width}x{self.figure_height}")
+        rospy.loginfo(f"Require fused results: {self.require_fused_results}")
 
     def own_detections_callback(self, msg):
         """接收自车检测结果"""
@@ -118,68 +134,215 @@ class DetectionVisualizer:
     def fused_detections_callback(self, msg):
         """接收融合后的检测结果"""
         self.fused_detections = msg.detections
+        self.last_fused_update_time = rospy.Time.now()
+        self.has_received_fused_data = True
         rospy.logdebug(f"Received {len(self.fused_detections)} fused detections")
 
     def update_matches(self, vehicle_id, matches):
         """更新匹配结果（由fusion_node调用）"""
         self.current_matches[vehicle_id] = matches
 
-    def world_to_image_coords(self, x, y):
-        """将世界坐标转换为图像坐标"""
-        img_x = int(x * self.scale_factor + self.image_width // 2)
-        img_y = int(
-            self.image_height - (y * self.scale_factor + self.image_height // 2)
-        )
-        return max(0, min(img_x, self.image_width - 1)), max(
-            0, min(img_y, self.image_height - 1)
-        )
+    def setup_subplot(self, ax, title, plot_range=None):
+        """设置子图的基本属性"""
+        if plot_range is None:
+            plot_range = self.plot_range
 
-    def draw_detection_box(self, img, detection, color, label_prefix=""):
-        """绘制检测框"""
-        # 使用3D位置作为中心点
-        center_x, center_y = self.world_to_image_coords(
-            detection.position.x, detection.position.y
+        ax.set_xlim(-plot_range, plot_range)
+        ax.set_ylim(-plot_range, plot_range)
+        ax.set_xlabel("X (meters)", fontsize=10, fontweight="bold")
+        ax.set_ylabel("Y (meters)", fontsize=10, fontweight="bold")
+        ax.grid(True, alpha=0.3, linewidth=0.5)
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=12, fontweight="bold", pad=10)
+
+        # 绘制坐标轴
+        ax.axhline(y=0, color="black", linewidth=1, alpha=0.5)
+        ax.axvline(x=0, color="black", linewidth=1, alpha=0.5)
+
+    def draw_detection_3d_box(
+        self, ax, detection, color, label_prefix="", alpha=0.7, show_label=True
+    ):
+        """
+        从俯视角度绘制3D检测框
+        bbox_3d格式: [xmin, ymin, zmin, xmax, ymax, zmax]
+        """
+        if len(detection.bbox_3d) < 6:
+            rospy.logwarn(f"Invalid bbox_3d format for detection {detection.object_id}")
+            return
+
+        # 提取3D边界框坐标
+        xmin, ymin, zmin, xmax, ymax, zmax = detection.bbox_3d
+
+        # 计算长宽（俯视图只关心x和y）
+        width = xmax - xmin
+        height = ymax - ymin
+
+        # 绘制矩形框（俯视图）
+        rect = Rectangle(
+            (xmin, ymin),
+            width,
+            height,
+            linewidth=2,
+            edgecolor=color,
+            facecolor=color,
+            alpha=alpha,
         )
-
-        # 使用2D边界框大小计算显示框大小
-        if len(detection.box_2d) >= 4:
-            box_width = max(20, abs(detection.box_2d[2] - detection.box_2d[0]) // 8)
-            box_height = max(15, abs(detection.box_2d[3] - detection.box_2d[1]) // 8)
-        else:
-            box_width, box_height = 30, 20
-
-        # 绘制矩形框
-        top_left = (center_x - box_width // 2, center_y - box_height // 2)
-        bottom_right = (center_x + box_width // 2, center_y + box_height // 2)
-        cv2.rectangle(img, top_left, bottom_right, color, 2)
+        ax.add_patch(rect)
 
         # 绘制中心点
-        cv2.circle(img, (center_x, center_y), 4, color, -1)
-
-        # 绘制标签
-        label = f"{label_prefix}{detection.object_id}({detection.type}:{detection.confidence:.2f})"
-        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
-
-        # 确保标签在图像范围内
-        label_x = max(0, min(top_left[0], self.image_width - label_size[0] - 5))
-        label_y = max(label_size[1] + 5, top_left[1])
-
-        cv2.rectangle(
-            img,
-            (label_x, label_y - label_size[1] - 5),
-            (label_x + label_size[0] + 5, label_y),
-            color,
-            -1,
+        center_x = (xmin + xmax) / 2
+        center_y = (ymin + ymax) / 2
+        ax.plot(
+            center_x,
+            center_y,
+            "o",
+            color=color,
+            markersize=6,
+            markeredgecolor="black",
+            markeredgewidth=1,
         )
-        cv2.putText(
-            img,
-            label,
-            (label_x + 2, label_y - 3),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            (0, 0, 0),
-            1,
-        )
+
+        # 添加标签（根据需要）
+        if show_label:
+            label = f"{label_prefix}{detection.object_id}\n{detection.type}\n{detection.confidence:.2f}"
+            ax.text(
+                center_x,
+                center_y + height / 2 + 2,
+                label,
+                fontsize=7,
+                ha="center",
+                va="bottom",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=color, alpha=0.7),
+            )
+
+    def get_vehicle_color(self, vehicle_id):
+        """为不同车辆分配颜色"""
+        vehicle_list = sorted(self.other_detections.keys())
+        if vehicle_id in vehicle_list:
+            idx = vehicle_list.index(vehicle_id)
+            return self.vehicle_colors[idx % len(self.vehicle_colors)]
+        return self.vehicle_colors[0]
+
+    def draw_own_detections_subplot(self, ax):
+        """绘制子图1：Own车检测结果"""
+        self.setup_subplot(ax, f"Own Vehicle Detections ({len(self.own_detections)})")
+
+        # 绘制自车检测结果
+        for i, detection in enumerate(self.own_detections):
+            self.draw_detection_3d_box(
+                ax, detection, self.colors["own"], "Own_", alpha=0.7, show_label=True
+            )
+
+        # 添加图例
+        legend_elements = [
+            patches.Patch(
+                color=self.colors["own"],
+                alpha=0.7,
+                label=f"Own Detections ({len(self.own_detections)})",
+            )
+        ]
+        ax.legend(handles=legend_elements, loc="upper right", fontsize=9)
+
+    def draw_other_detections_subplot(self, ax):
+        """绘制子图2：Other车检测结果"""
+        total_other = sum(len(dets) for dets in self.other_detections.values())
+        self.setup_subplot(ax, f"Other Vehicles Detections ({total_other})")
+
+        # 绘制其他车辆检测结果（使用不同颜色区分车辆）
+        legend_elements = []
+        for vehicle_id, detections in self.other_detections.items():
+            vehicle_color = self.get_vehicle_color(vehicle_id)
+            for detection in detections:
+                self.draw_detection_3d_box(
+                    ax,
+                    detection,
+                    vehicle_color,
+                    f"{vehicle_id}_",
+                    alpha=0.6,
+                    show_label=True,
+                )
+
+            # 为每个车辆添加图例项
+            legend_elements.append(
+                patches.Patch(
+                    color=vehicle_color,
+                    alpha=0.6,
+                    label=f"{vehicle_id} ({len(detections)})",
+                )
+            )
+
+        # 添加图例
+        if legend_elements:
+            ax.legend(handles=legend_elements, loc="upper right", fontsize=9)
+
+    def draw_fused_detections_subplot(self, ax):
+        """绘制子图3：融合后检测结果"""
+        title = f"Fused Detections ({len(self.fused_detections)})"
+
+        # 如果融合结果为空，在标题中标注
+        if len(self.fused_detections) == 0:
+            title += " - No Fusion Results"
+
+        self.setup_subplot(ax, title)
+
+        # 绘制融合后的检测结果
+        for fused_det in self.fused_detections:
+            self.draw_detection_3d_box(
+                ax,
+                fused_det,
+                self.colors["fused"],
+                "Fused_",
+                alpha=0.8,
+                show_label=True,
+            )
+
+        # 添加图例
+        if len(self.fused_detections) > 0:
+            legend_elements = [
+                patches.Patch(
+                    color=self.colors["fused"],
+                    alpha=0.8,
+                    label=f"Fused Detections ({len(self.fused_detections)})",
+                )
+            ]
+            ax.legend(handles=legend_elements, loc="upper right", fontsize=9)
+        else:
+            # 如果没有融合结果，显示等待信息
+            ax.text(
+                0.5,
+                0.5,
+                "Waiting for\nFusion Results...",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=14,
+                fontweight="bold",
+                color="gray",
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.8),
+            )
+
+    def matplotlib_to_cv2(self, fig):
+        """将matplotlib图形转换为OpenCV图像"""
+        # 将图形保存到内存中的字节流
+        fig.canvas.draw()
+        buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+
+        # 转换RGB到BGR（OpenCV格式）
+        img_bgr = buf[:, :, ::-1].copy()
+        return img_bgr
+
+    def cv2_to_imgmsg_manual(self, cv_image, encoding="bgr8"):
+        """手动将OpenCV图像转换为ROS Image消息（当cv_bridge不可用时）"""
+        img_msg = Image()
+        img_msg.header = Header(stamp=rospy.Time.now(), frame_id="visualization")
+        img_msg.height = cv_image.shape[0]
+        img_msg.width = cv_image.shape[1]
+        img_msg.encoding = encoding
+        img_msg.is_bigendian = 0
+        img_msg.step = cv_image.shape[1] * cv_image.shape[2]
+        img_msg.data = cv_image.tobytes()
+        return img_msg
 
     def save_visualization_image(self, img):
         """保存可视化图像到文件"""
@@ -199,250 +362,133 @@ class DetectionVisualizer:
 
         # 保存图像
         try:
+            import cv2
+
             cv2.imwrite(filepath, img)
             self.image_counter += 1
             rospy.loginfo_throttle(5, f"Saved visualization to: {filename}")
         except Exception as e:
             rospy.logwarn(f"Failed to save image: {e}")
 
-    def draw_match_line(self, img, own_det, other_det, vehicle_id):
-        """绘制匹配连线"""
-        own_x, own_y = self.world_to_image_coords(
-            own_det.position.x, own_det.position.y
-        )
-        other_x, other_y = self.world_to_image_coords(
-            other_det.position.x, other_det.position.y
-        )
+    def should_generate_visualization(self):
+        """检查是否应该生成可视化"""
+        # 如果不要求融合结果，直接允许绘制
+        if not self.require_fused_results:
+            return True, "Fusion results not required"
 
-        # 绘制连线
-        cv2.line(img, (own_x, own_y), (other_x, other_y), self.colors["matched"], 2)
+        # 检查是否有基本数据
+        if not self.own_detections and not any(self.other_detections.values()):
+            return False, "No detection data available"
 
-        # 在连线中点绘制匹配标识
-        mid_x, mid_y = (own_x + other_x) // 2, (own_y + other_y) // 2
-        cv2.circle(img, (mid_x, mid_y), 6, self.colors["matched"], -1)
-        cv2.putText(
-            img,
-            f"M",
-            (mid_x + 8, mid_y + 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.3,
-            self.colors["text"],
-            1,
-        )
+        # 如果有own或other检测，但还没有收到过融合数据
+        if (
+            self.own_detections or any(self.other_detections.values())
+        ) and not self.has_received_fused_data:
+            current_time = rospy.Time.now()
+            wait_time = (current_time - self.last_fused_update_time).to_sec()
+
+            if wait_time < self.wait_for_fusion_timeout:
+                return False, f"Waiting for fusion results (waited {wait_time:.1f}s)"
+            else:
+                rospy.logwarn_throttle(
+                    10,
+                    "Timeout waiting for fusion results, proceeding with visualization",
+                )
+                return True, "Timeout waiting for fusion results"
+
+        # 如果要求融合结果不为空
+        if len(self.fused_detections) == 0:
+            return False, "Fusion results list is empty"
+
+        return True, "All conditions met"
 
     def generate_visualization(self, event=None):
-        """生成可视化图像"""
-        # 创建空白图像
-        img = np.full(
-            (self.image_height, self.image_width, 3),
-            self.colors["background"],
-            dtype=np.uint8,
+        """生成可视化图像 - 3个子图布局"""
+        # 检查是否应该生成可视化
+        should_generate, reason = self.should_generate_visualization()
+
+        if not should_generate:
+            rospy.logdebug_throttle(2, f"Skipping visualization: {reason}")
+            return
+
+        rospy.logdebug(f"Generating visualization: {reason}")
+
+        # 创建包含3个子图的matplotlib图形
+        fig, (ax1, ax2, ax3) = plt.subplots(
+            1, 3, figsize=(self.figure_width, self.figure_height), dpi=self.dpi
         )
 
-        # 绘制坐标轴和网格
-        self.draw_grid(img)
+        # 设置整体背景色
+        fig.patch.set_facecolor(self.colors["background"])
 
-        # 绘制自车检测结果
-        for i, detection in enumerate(self.own_detections):
-            self.draw_detection_box(img, detection, self.colors["own"], "Own_")
+        # 绘制三个子图
+        self.draw_own_detections_subplot(ax1)
+        self.draw_other_detections_subplot(ax2)
+        self.draw_fused_detections_subplot(ax3)
 
-        # 绘制他车检测结果
-        for vehicle_id, detections in self.other_detections.items():
-            for detection in detections:
-                self.draw_detection_box(
-                    img, detection, self.colors["other"], f"{vehicle_id}_"
-                )
-
-        # 绘制匹配连线
-        for vehicle_id, matches in self.current_matches.items():
-            if vehicle_id in self.other_detections:
-                other_dets = self.other_detections[vehicle_id]
-                for own_idx, other_idx in matches:
-                    if own_idx < len(self.own_detections) and other_idx < len(
-                        other_dets
-                    ):
-                        own_det = self.own_detections[own_idx]
-                        other_det = other_dets[other_idx]
-                        self.draw_match_line(img, own_det, other_det, vehicle_id)
-
-        # 绘制融合后的检测结果
-        for fused_det in self.fused_detections:
-            self.draw_detection_box(img, fused_det, self.colors["fused"], "Fused_")
-
-        # 添加图例
-        self.draw_legend(img)
+        # 添加整体标题
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fig.suptitle(
+            f"Vehicle Detection Fusion System - Bird's Eye View\n{timestamp}",
+            fontsize=14,
+            fontweight="bold",
+            y=0.95,
+        )
 
         # 添加统计信息
-        self.draw_statistics(img)
+        total_other = sum(len(dets) for dets in self.other_detections.values())
+        total_matches = sum(len(matches) for matches in self.current_matches.values())
 
-        # 添加时间戳
-        self.draw_timestamp(img)
+        # 添加融合状态信息
+        fusion_status = "Active" if len(self.fused_detections) > 0 else "Inactive"
+        last_update = (rospy.Time.now() - self.last_fused_update_time).to_sec()
+
+        stats_text = (
+            f"System Statistics: Own: {len(self.own_detections)} | "
+            f"Others: {total_other} | "
+            f"Fused: {len(self.fused_detections)} | "
+            f"Matches: {total_matches} | "
+            f"Vehicles: {len(self.other_detections)} | "
+            f"Fusion: {fusion_status} (Updated {last_update:.1f}s ago)"
+        )
+
+        fig.text(
+            0.5,
+            0.02,
+            stats_text,
+            ha="center",
+            fontsize=10,
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.8),
+        )
+
+        # 调整子图间距
+        plt.tight_layout(rect=[0, 0.05, 1, 0.92])
+
+        # 转换为OpenCV图像格式
+        cv_image = self.matplotlib_to_cv2(fig)
 
         # 保存图像文件
-        self.save_visualization_image(img)
+        self.save_visualization_image(cv_image)
 
         # 发布可视化图像
         try:
             if CV_BRIDGE_AVAILABLE and self.bridge:
-                img_msg = self.bridge.cv2_to_imgmsg(img, "bgr8")
+                img_msg = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
             else:
-                img_msg = self.cv2_to_imgmsg_manual(img, "bgr8")
+                img_msg = self.cv2_to_imgmsg_manual(cv_image, "bgr8")
 
             img_msg.header = Header(stamp=rospy.Time.now(), frame_id="visualization")
             self.vis_pub.publish(img_msg)
+
+            rospy.loginfo_throttle(
+                5,
+                f"Published visualization with {len(self.fused_detections)} fused detections",
+            )
         except Exception as e:
             rospy.logwarn(f"Failed to publish visualization: {e}")
 
-    def draw_timestamp(self, img):
-        """绘制时间戳"""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(
-            img,
-            timestamp,
-            (self.image_width - 200, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            self.colors["text"],
-            1,
-        )
-
-    def draw_grid(self, img):
-        """绘制坐标轴和网格"""
-        center_x, center_y = self.image_width // 2, self.image_height // 2
-
-        # 绘制主坐标轴
-        cv2.line(img, (0, center_y), (self.image_width, center_y), (120, 120, 120), 2)
-        cv2.line(img, (center_x, 0), (center_x, self.image_height), (120, 120, 120), 2)
-
-        # 绘制网格
-        grid_spacing = int(self.scale_factor * 2)  # 每2米一个网格
-        for x in range(center_x, self.image_width, grid_spacing):
-            cv2.line(img, (x, 0), (x, self.image_height), (80, 80, 80), 1)
-        for x in range(center_x, 0, -grid_spacing):
-            cv2.line(img, (x, 0), (x, self.image_height), (80, 80, 80), 1)
-        for y in range(center_y, self.image_height, grid_spacing):
-            cv2.line(img, (0, y), (self.image_width, y), (80, 80, 80), 1)
-        for y in range(center_y, 0, -grid_spacing):
-            cv2.line(img, (0, y), (self.image_width, y), (80, 80, 80), 1)
-
-        # 添加坐标标签
-        cv2.putText(
-            img,
-            "X",
-            (self.image_width - 30, center_y - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            self.colors["text"],
-            2,
-        )
-        cv2.putText(
-            img,
-            "Y",
-            (center_x + 10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            self.colors["text"],
-            2,
-        )
-
-    def draw_legend(self, img):
-        """绘制图例"""
-        legend_items = [
-            ("Own Detections", self.colors["own"]),
-            ("Other Detections", self.colors["other"]),
-            ("Match Lines", self.colors["matched"]),
-            ("Fused Results", self.colors["fused"]),
-        ]
-
-        legend_x = 20
-        legend_y = 40
-        box_size = 20
-
-        # 绘制图例背景
-        legend_bg_width = 200
-        legend_bg_height = len(legend_items) * 30 + 20
-        cv2.rectangle(
-            img,
-            (legend_x - 10, legend_y - 20),
-            (legend_x + legend_bg_width, legend_y + legend_bg_height),
-            (30, 30, 30),
-            -1,
-        )
-        cv2.rectangle(
-            img,
-            (legend_x - 10, legend_y - 20),
-            (legend_x + legend_bg_width, legend_y + legend_bg_height),
-            (150, 150, 150),
-            2,
-        )
-
-        for i, (label, color) in enumerate(legend_items):
-            y = legend_y + i * 30
-            cv2.rectangle(
-                img, (legend_x, y), (legend_x + box_size, y + box_size), color, -1
-            )
-            cv2.rectangle(
-                img,
-                (legend_x, y),
-                (legend_x + box_size, y + box_size),
-                (255, 255, 255),
-                1,
-            )
-            cv2.putText(
-                img,
-                label,
-                (legend_x + box_size + 10, y + 15),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                self.colors["text"],
-                1,
-            )
-
-    def draw_statistics(self, img):
-        """绘制统计信息"""
-        total_matches = sum(len(matches) for matches in self.current_matches.values())
-        total_other = sum(len(dets) for dets in self.other_detections.values())
-
-        stats = [
-            f"Own Detections: {len(self.own_detections)}",
-            f"Other Detections: {total_other}",
-            f"Total Matches: {total_matches}",
-            f"Fused Detections: {len(self.fused_detections)}",
-            f"Other Vehicles: {len(self.other_detections)}",
-        ]
-
-        stats_x = 20
-        stats_y = self.image_height - 120
-
-        # 绘制统计信息背景
-        stats_bg_width = 250
-        stats_bg_height = len(stats) * 20 + 20
-        cv2.rectangle(
-            img,
-            (stats_x - 10, stats_y - 20),
-            (stats_x + stats_bg_width, stats_y + stats_bg_height),
-            (30, 30, 30),
-            -1,
-        )
-        cv2.rectangle(
-            img,
-            (stats_x - 10, stats_y - 20),
-            (stats_x + stats_bg_width, stats_y + stats_bg_height),
-            (150, 150, 150),
-            2,
-        )
-
-        for i, stat in enumerate(stats):
-            y = stats_y + i * 20
-            cv2.putText(
-                img,
-                stat,
-                (stats_x, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                self.colors["text"],
-                1,
-            )
+        # 清理matplotlib资源
+        plt.close(fig)
 
 
 # 全局可视化器实例

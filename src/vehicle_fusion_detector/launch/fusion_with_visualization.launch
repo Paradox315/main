@@ -3,14 +3,15 @@
     <arg name="rpc_host" default="localhost" />
     <arg name="rpc_port" default="8000" />
     
-    <!-- Visualization Parameters -->
-    <arg name="image_width" default="1200" />
-    <arg name="image_height" default="800" />
-    <arg name="scale_factor" default="15.0" />
+    <!-- Visualization Parameters - 适应3子图布局 -->
+    <arg name="figure_width" default="20" />  <!-- 更宽以容纳3个子图 -->
+    <arg name="figure_height" default="8" />  <!-- 适中的高度 -->
+    <arg name="plot_range" default="50.0" />
+    <arg name="dpi" default="100" />
     <arg name="save_images" default="true" />
     <arg name="save_path" default="/home/huyaowen/catkin_ws/visualization_output" />
-    <arg name="use_web_viewer" default="true" />
-    <arg name="web_port" default="8080" />
+    <arg name="require_fused_results" default="true" />
+    <arg name="wait_for_fusion_timeout" default="5.0" />
     
     <!-- Start RPC Matching Server -->
     <node pkg="vehicle_fusion_detector" type="matching_rpc_server.py" 
@@ -44,23 +45,17 @@
         <param name="vehicle_id" value="vehicle_A" />
     </node>
     
-    <!-- Start Detection Visualizer with file saving -->
+    <!-- Start Detection Visualizer with fusion result checking -->
     <node pkg="vehicle_fusion_detector" type="detection_visualizer.py" 
           name="detection_visualizer" output="screen">
-        <param name="image_width" value="$(arg image_width)" />
-        <param name="image_height" value="$(arg image_height)" />
-        <param name="scale_factor" value="$(arg scale_factor)" />
+        <param name="figure_width" value="$(arg figure_width)" />
+        <param name="figure_height" value="$(arg figure_height)" />
+        <param name="plot_range" value="$(arg plot_range)" />
+        <param name="dpi" value="$(arg dpi)" />
         <param name="save_images" value="$(arg save_images)" />
         <param name="save_path" value="$(arg save_path)" />
         <param name="save_interval" value="1.0" />
-    </node>
-    
-    <!-- Start Simple Image Viewer -->
-    <node pkg="vehicle_fusion_detector" type="simple_image_viewer.py" 
-          name="simple_image_viewer" output="screen">
-        <param name="image_dir" value="$(arg save_path)" />
-        <param name="check_interval" value="2.0" />
-        <param name="use_web_viewer" value="$(arg use_web_viewer)" />
-        <param name="web_port" value="$(arg web_port)" />
+        <param name="require_fused_results" value="$(arg require_fused_results)" />
+        <param name="wait_for_fusion_timeout" value="$(arg wait_for_fusion_timeout)" />
     </node>
 </launch>
