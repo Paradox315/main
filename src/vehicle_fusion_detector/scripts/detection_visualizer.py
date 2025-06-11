@@ -14,7 +14,7 @@ from matplotlib.patches import Rectangle
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
-from demoros2.msg import Detections, DetectionsWithOdom, MatchResult
+from demoros2.msg import FusionResult
 
 # 尝试导入cv_bridge，如果失败则使用替代方案
 try:
@@ -31,9 +31,9 @@ class DetectionVisualizer:
         rospy.init_node("detection_visualizer", anonymous=True)
 
         # 参数配置
-        self.figure_width = rospy.get_param("~figure_width", 20)
-        self.figure_height = rospy.get_param("~figure_height", 8)
-        self.plot_range = rospy.get_param("~plot_range", 50.0)  # 绘图范围（米）
+        self.figure_width = rospy.get_param("~figure_width", 16)
+        self.figure_height = rospy.get_param("~figure_height", 12)
+        self.plot_range = rospy.get_param("~plot_range", 50.0)
         self.dpi = rospy.get_param("~dpi", 100)
 
         # 新增参数：是否保存图像文件
@@ -71,11 +71,12 @@ class DetectionVisualizer:
         # 发布器
         self.vis_pub = rospy.Publisher("detection_visualization", Image, queue_size=10)
 
-        # 数据存储
+        # 数据存储 - 修改为从融合结果获取数据
+        self.current_fusion_result = None
         self.own_detections = []
         self.other_detections = {}  # {vehicle_id: detections}
         self.fused_detections = []
-        self.current_matches = {}  # {vehicle_id: [(own_idx, other_idx), ...]}
+        self.match_results = {}  # {(own_idx, vehicle_id): (other_idx, score)}
 
         # 融合结果状态跟踪
         self.last_fused_update_time = rospy.Time.now()
@@ -85,19 +86,8 @@ class DetectionVisualizer:
         self.image_counter = 0
         self.last_save_time = rospy.Time.now()
 
-        # 订阅器
-        rospy.Subscriber(
-            "own_sensor_detections", DetectionsWithOdom, self.own_detections_callback
-        )
-        rospy.Subscriber(
-            "other_vehicle_detections",
-            DetectionsWithOdom,
-            self.other_detections_callback,
-        )
-        rospy.Subscriber(
-            "fused_detections", DetectionsWithOdom, self.fused_detections_callback
-        )
-        rospy.Subscriber("detection_matches", MatchResult, self.matches_callback)
+        # 订阅器 - 只订阅融合结果
+        rospy.Subscriber("fusion_results", FusionResult, self.fusion_result_callback)
 
         # 颜色定义 - 使用matplotlib颜色格式
         self.colors = {
@@ -121,41 +111,46 @@ class DetectionVisualizer:
         # 定时器 - 定期生成可视化
         self.vis_timer = rospy.Timer(rospy.Duration(0.2), self.generate_visualization)
 
-        rospy.loginfo("Detection Visualizer initialized with 3-subplot layout")
+        rospy.loginfo("Detection Visualizer initialized with 2x2 layout")
         rospy.loginfo(f"Save images: {self.save_images}")
         rospy.loginfo(f"Figure size: {self.figure_width}x{self.figure_height}")
-        rospy.loginfo(f"Require fused results: {self.require_fused_results}")
         rospy.loginfo(f"Subplot3 mode: {self.subplot3_mode}")
 
-    def own_detections_callback(self, msg):
-        """接收自车检测结果"""
-        self.own_detections = msg.detections
-        rospy.logdebug(f"Received {len(self.own_detections)} own detections")
+    def fusion_result_callback(self, msg):
+        """接收融合结果消息"""
+        self.current_fusion_result = msg
 
-    def other_detections_callback(self, msg):
-        """接收他车检测结果"""
-        vehicle_id = msg.car_id
-        self.other_detections[vehicle_id] = msg.detections
-        rospy.logdebug(f"Received {len(msg.detections)} detections from {vehicle_id}")
+        # 更新数据 - 从DetectionsWithOdom中提取检测数据
+        self.own_detections = list(msg.own_detections_with_odom.detections)
 
-    def fused_detections_callback(self, msg):
-        """接收融合后的检测结果"""
-        self.fused_detections = msg.detections
+        # 重建other_detections字典
+        self.other_detections = {}
+        for other_detection_msg in msg.other_detections_list:
+            vehicle_id = other_detection_msg.car_id
+            self.other_detections[vehicle_id] = list(other_detection_msg.detections)
+
+        self.fused_detections = list(msg.fused_detections.detections)
+
+        # 重建匹配结果信息
+        self.match_results = {}
+        for match_result in msg.match_results:
+            vehicle_id = match_result.other_vehicle_id
+            for i in range(len(match_result.own_indices)):
+                own_idx = match_result.own_indices[i]
+                other_idx = match_result.other_indices[i]
+                score = match_result.match_scores[i]
+                self.match_results[(own_idx, vehicle_id)] = (other_idx, score)
+
+        # 更新融合状态
         self.last_fused_update_time = rospy.Time.now()
         self.has_received_fused_data = True
-        rospy.loginfo(f"matches: {self.current_matches}")
-        rospy.logdebug(f"Received {len(self.fused_detections)} fused detections")
 
-    def matches_callback(self, msg):
-        """接收匹配结果消息"""
-        vehicle_id = msg.other_vehicle_id
-        matches = list(zip(msg.own_indices, msg.other_indices))
-        self.current_matches[vehicle_id] = matches
-        rospy.logdebug(f"Received {len(matches)} matches for {vehicle_id}")
-
-    def update_matches(self, vehicle_id, matches):
-        """更新匹配结果（保留兼容性，但主要通过ROS消息更新）"""
-        self.current_matches[vehicle_id] = matches
+        rospy.logdebug(
+            f"Received fusion result: {len(self.own_detections)} own, "
+            f"{len(self.other_detections)} other vehicles, "
+            f"{len(self.match_results)} match results, "
+            f"{len(self.fused_detections)} fused"
+        )
 
     def setup_subplot(self, ax, title, plot_range=None):
         """设置子图的基本属性"""
@@ -247,43 +242,42 @@ class DetectionVisualizer:
 
     def draw_match_lines_between_subplots(self, fig, ax1, ax2):
         """在子图1和子图2之间绘制匹配连线"""
-        for vehicle_id, matches in self.current_matches.items():
-            if vehicle_id in self.other_detections:
-                other_dets = self.other_detections[vehicle_id]
+        for (own_idx, vehicle_id), (other_idx, score) in self.match_results.items():
+            if (
+                own_idx < len(self.own_detections)
+                and vehicle_id in self.other_detections
+                and other_idx < len(self.other_detections[vehicle_id])
+            ):
+                own_det = self.own_detections[own_idx]
+                other_det = self.other_detections[vehicle_id][other_idx]
+
+                # 计算在各自子图中的坐标
+                own_x, own_y = self._get_detection_center_in_subplot(own_det)
+                other_x, other_y = self._get_detection_center_in_subplot(other_det)
+
+                # 转换为图形坐标系
+                own_fig_x, own_fig_y = self._subplot_to_figure_coords(ax1, own_x, own_y)
+                other_fig_x, other_fig_y = self._subplot_to_figure_coords(
+                    ax2, other_x, other_y
+                )
+
+                # 获取车辆颜色
                 vehicle_color = self.get_vehicle_color(vehicle_id)
 
-                for own_idx, other_idx in matches:
-                    if own_idx < len(self.own_detections) and other_idx < len(
-                        other_dets
-                    ):
-                        own_det = self.own_detections[own_idx]
-                        other_det = other_dets[other_idx]
+                # 根据得分调整线条透明度
+                alpha = min(0.8, max(0.3, score))
 
-                        # 计算在各自子图中的坐标
-                        own_x, own_y = self._get_detection_center_in_subplot(own_det)
-                        other_x, other_y = self._get_detection_center_in_subplot(
-                            other_det
-                        )
-
-                        # 转换为图形坐标系
-                        own_fig_x, own_fig_y = self._subplot_to_figure_coords(
-                            ax1, own_x, own_y
-                        )
-                        other_fig_x, other_fig_y = self._subplot_to_figure_coords(
-                            ax2, other_x, other_y
-                        )
-
-                        # 在整个图形上绘制连线
-                        line = plt.Line2D(
-                            [own_fig_x, other_fig_x],
-                            [own_fig_y, other_fig_y],
-                            color=vehicle_color,
-                            linewidth=2,
-                            alpha=0.6,
-                            linestyle="--",
-                            transform=fig.transFigure,
-                        )
-                        fig.lines.append(line)
+                # 在整个图形上绘制连线
+                line = plt.Line2D(
+                    [own_fig_x, other_fig_x],
+                    [own_fig_y, other_fig_y],
+                    color=vehicle_color,
+                    linewidth=2,
+                    alpha=alpha,
+                    linestyle="--",
+                    transform=fig.transFigure,
+                )
+                fig.lines.append(line)
 
     def _get_detection_center_in_subplot(self, detection):
         """获取检测框在子图坐标系中的中心点"""
@@ -311,8 +305,7 @@ class DetectionVisualizer:
         for i, detection in enumerate(self.own_detections):
             # 检查这个检测是否被匹配了
             is_matched = any(
-                i in [match[0] for match in matches]
-                for matches in self.current_matches.values()
+                own_idx == i for (own_idx, _), _ in self.match_results.items()
             )
 
             # 根据是否匹配使用不同的透明度和边框
@@ -331,13 +324,8 @@ class DetectionVisualizer:
 
         # 添加图例
         matched_count = len(
-            set(
-                match[0]
-                for matches in self.current_matches.values()
-                for match in matches
-            )
+            set(own_idx for (own_idx, _), _ in self.match_results.items())
         )
-
         legend_elements = [
             patches.Patch(
                 color=self.colors["own"],
@@ -352,12 +340,16 @@ class DetectionVisualizer:
         total_other = sum(len(dets) for dets in self.other_detections.values())
         self.setup_subplot(ax, f"Other Vehicles Detections ({total_other})")
 
-        # 绘制其他车辆检测结果（使用不同颜色区分车辆）
+        # 绘制其他车辆检测结果
         legend_elements = []
         for vehicle_id, detections in self.other_detections.items():
             vehicle_color = self.get_vehicle_color(vehicle_id)
-            vehicle_matches = self.current_matches.get(vehicle_id, [])
-            matched_other_indices = set(match[1] for match in vehicle_matches)
+
+            # 计算该车辆被匹配的检测数量
+            matched_other_indices = set()
+            for (own_idx, v_id), (other_idx, score) in self.match_results.items():
+                if v_id == vehicle_id:
+                    matched_other_indices.add(other_idx)
 
             for i, detection in enumerate(detections):
                 # 检查这个检测是否被匹配了
@@ -602,25 +594,13 @@ class DetectionVisualizer:
         if not self.require_fused_results:
             return True, "Fusion results not required"
 
+        # 检查是否收到融合结果
+        if self.current_fusion_result is None:
+            return False, "No fusion result received"
+
         # 检查是否有基本数据
         if not self.own_detections and not any(self.other_detections.values()):
             return False, "No detection data available"
-
-        # 如果有own或other检测，但还没有收到过融合数据
-        if (
-            self.own_detections or any(self.other_detections.values())
-        ) and not self.has_received_fused_data:
-            current_time = rospy.Time.now()
-            wait_time = (current_time - self.last_fused_update_time).to_sec()
-
-            if wait_time < self.wait_for_fusion_timeout:
-                return False, f"Waiting for fusion results (waited {wait_time:.1f}s)"
-            else:
-                rospy.logwarn_throttle(
-                    10,
-                    "Timeout waiting for fusion results, proceeding with visualization",
-                )
-                return True, "Timeout waiting for fusion results"
 
         # 如果要求融合结果不为空
         if len(self.fused_detections) == 0:
@@ -629,7 +609,7 @@ class DetectionVisualizer:
         return True, "All conditions met"
 
     def generate_visualization(self, event=None):
-        """生成可视化图像 - 3个子图布局"""
+        """生成可视化图像 - 2x2布局：上行(Own, Other)，下行(Fused跨列)"""
         # 检查是否应该生成可视化
         should_generate, reason = self.should_generate_visualization()
 
@@ -639,10 +619,13 @@ class DetectionVisualizer:
 
         rospy.logdebug(f"Generating visualization: {reason}")
 
-        # 创建包含3个子图的matplotlib图形
-        fig, (ax1, ax2, ax3) = plt.subplots(
-            1, 3, figsize=(self.figure_width, self.figure_height), dpi=self.dpi
-        )
+        # 创建2x2子图布局
+        fig = plt.figure(figsize=(self.figure_width, self.figure_height), dpi=self.dpi)
+
+        # 创建子图：上行两个，下行一个跨列
+        ax1 = plt.subplot2grid((2, 2), (0, 0))  # Own detections
+        ax2 = plt.subplot2grid((2, 2), (0, 1))  # Other detections
+        ax3 = plt.subplot2grid((2, 2), (1, 0), colspan=2)  # Fused detections (跨两列)
 
         # 设置整体背景色
         fig.patch.set_facecolor(self.colors["background"])
@@ -669,7 +652,7 @@ class DetectionVisualizer:
 
         # 添加统计信息
         total_other = sum(len(dets) for dets in self.other_detections.values())
-        total_matches = sum(len(matches) for matches in self.current_matches.values())
+        total_match_results = len(self.match_results)
 
         # 添加融合状态信息
         fusion_status = "Active" if len(self.fused_detections) > 0 else "Inactive"
@@ -688,7 +671,7 @@ class DetectionVisualizer:
             f"System Statistics: Own: {len(self.own_detections)} | "
             f"Others: {total_other} | "
             f"Fused: {len(self.fused_detections)} | "
-            f"Matches: {total_matches} | "
+            f"Match Results: {total_match_results} | "
             f"Vehicles: {len(self.other_detections)} | "
             f"Fusion: {fusion_status} (Updated {last_update:.1f}s ago)"
             f"{extra_stats}"
@@ -724,7 +707,7 @@ class DetectionVisualizer:
 
             rospy.loginfo_throttle(
                 5,
-                f"Published visualization with {len(self.fused_detections)} fused detections, {total_matches} matches (mode: {self.subplot3_mode})",
+                f"Published visualization with {len(self.fused_detections)} fused detections, {total_match_results} match results (mode: {self.subplot3_mode})",
             )
         except Exception as e:
             rospy.logwarn(f"Failed to publish visualization: {e}")
@@ -749,24 +732,30 @@ class DetectionVisualizer:
 
     def get_unmatched_detections(self):
         """获取所有未匹配的检测"""
-        matched_own_indices, matched_other_indices = (
-            self.get_matched_detection_indices()
-        )
-
         # 获取未匹配的own检测
+        matched_own_indices = set(
+            own_idx for (own_idx, _), _ in self.match_results.items()
+        )
         unmatched_own = []
         for i, detection in enumerate(self.own_detections):
             if i not in matched_own_indices:
                 unmatched_own.append(detection)
 
         # 获取未匹配的other检测
-        unmatched_other = {}  # {vehicle_id: [detections]}
+        unmatched_other = {}
         for vehicle_id, detections in self.other_detections.items():
-            matched_indices = matched_other_indices.get(vehicle_id, set())
+            # 收集该车辆所有被匹配的索引
+            matched_indices = set()
+            for (own_idx, v_id), (other_idx, score) in self.match_results.items():
+                if v_id == vehicle_id:
+                    matched_indices.add(other_idx)
+
+            # 找出未匹配的检测
             unmatched_detections = []
             for i, detection in enumerate(detections):
                 if i not in matched_indices:
                     unmatched_detections.append(detection)
+
             if unmatched_detections:
                 unmatched_other[vehicle_id] = unmatched_detections
 

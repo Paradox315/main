@@ -1,0 +1,58 @@
+<launch>
+    <!-- Global Map Parameters -->
+    <arg name="global_map_range" default="100.0" />
+    <arg name="sync_timeout" default="5.0" />
+    <arg name="max_time_diff" default="2.0" />
+    
+    <!-- Visualization Parameters -->
+    <arg name="figure_width" default="20" />
+    <arg name="figure_height" default="16" />
+    <arg name="save_images" default="true" />
+    <arg name="save_path" default="/home/huyaowen/catkin_ws/global_visualization_output" />
+    
+    <!-- Simulation Parameters -->
+    <arg name="quadrant_range" default="50.0" />
+    <arg name="max_detections" default="3" />
+    
+    <!-- Start 4 Quadrant Fusion Simulators -->
+    <node pkg="vehicle_fusion_detector" type="quadrant_fusion_simulator.py" 
+          name="quadrant_1_simulator" args="1" output="screen">
+        <param name="publish_rate" value="1.5" />
+        <param name="quadrant_range" value="$(arg quadrant_range)" />
+        <param name="max_detections" value="$(arg max_detections)" />
+    </node>
+    
+    <node pkg="vehicle_fusion_detector" type="quadrant_fusion_simulator.py" 
+          name="quadrant_2_simulator" args="2" output="screen">
+        <param name="publish_rate" value="0.8" />
+        <param name="quadrant_range" value="$(arg quadrant_range)" />
+        <param name="max_detections" value="$(arg max_detections)" />
+    </node>
+    
+    <node pkg="vehicle_fusion_detector" type="quadrant_fusion_simulator.py" 
+          name="quadrant_3_simulator" args="3" output="screen">
+        <param name="publish_rate" value="2.0" />
+        <param name="quadrant_range" value="$(arg quadrant_range)" />
+        <param name="max_detections" value="$(arg max_detections)" />
+    </node>
+    
+    <node pkg="vehicle_fusion_detector" type="quadrant_fusion_simulator.py" 
+          name="quadrant_4_simulator" args="4" output="screen">
+        <param name="publish_rate" value="1.2" />
+        <param name="quadrant_range" value="$(arg quadrant_range)" />
+        <param name="max_detections" value="$(arg max_detections)" />
+    </node>
+    
+    <!-- Start Global Map Visualizer -->
+    <node pkg="vehicle_fusion_detector" type="global_map_visualizer.py" 
+          name="global_map_visualizer" output="screen">
+        <param name="global_map_range" value="$(arg global_map_range)" />
+        <param name="sync_timeout" value="$(arg sync_timeout)" />
+        <param name="max_time_diff" value="$(arg max_time_diff)" />
+        <param name="figure_width" value="$(arg figure_width)" />
+        <param name="figure_height" value="$(arg figure_height)" />
+        <param name="save_images" value="$(arg save_images)" />
+        <param name="save_path" value="$(arg save_path)" />
+        <param name="save_interval" value="2.0" />
+    </node>
+</launch>

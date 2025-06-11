@@ -13,7 +13,12 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 
-from demoros2.msg import Detections, DetectionsWithOdom, MatchResult  # 添加MatchResult
+from demoros2.msg import (
+    Detections,
+    DetectionsWithOdom,
+    FusionResult,
+    MatchResult,
+)
 
 # 添加当前脚本目录到Python路径，以便导入graph_matching模块
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -57,14 +62,10 @@ class DetectionFuser:
         self.rpc_session = requests.Session()
         self.rpc_session.timeout = RPC_TIMEOUT
 
-        # 发布器 - 添加融合检测结果发布器
-        self.fused_pub = rospy.Publisher(
-            "fused_detections", DetectionsWithOdom, queue_size=10
+        # 发布器 - 修改为发布融合结果
+        self.fusion_result_pub = rospy.Publisher(
+            "fusion_results", FusionResult, queue_size=10
         )
-        self.match_pub = rospy.Publisher(
-            "detection_matches", MatchResult, queue_size=10
-        )
-
         self.other_detections_buffer = collections.defaultdict(
             lambda: collections.deque(maxlen=OTHER_DETECTIONS_BUFFER_SIZE)
         )
@@ -352,7 +353,7 @@ class DetectionFuser:
         与多个车辆进行匹配，然后统一融合所有关联的检测
         """
         # 存储每个own检测的所有匹配结果
-        # own_matches[own_idx] = [(vehicle_id, other_idx, match_score), ...]
+        # own_matches[own_idx] = [(vehicle_id, other_idx, match_score, other_det), ...]
         own_matches = {i: [] for i in range(len(own_dets_list))}
 
         rospy.loginfo("=== Starting Multi-Vehicle Matching ===")
@@ -433,35 +434,112 @@ class DetectionFuser:
                     f"from {vehicle_list} -> Fused[{fused_det.object_id}]"
                 )
 
-        # 步骤3：发布融合结果（一次性发布所有融合后的检测）
-        if fused_detections and len(fused_detections) > 0:
-            self.publish_fused_detections(fused_detections, rospy.Time.now())
-            rospy.loginfo(f"=== Published {len(fused_detections)} fused detections ===")
-
-            # 通知可视化器（需要重新整理匹配关系）
-            self._notify_visualizer_multi_matches(own_matches, all_other_vehicles_data)
+        # 步骤3：发布完整的融合结果
+        if fused_detections:
+            self.publish_fusion_result(
+                own_dets_list, all_other_vehicles_data, own_matches, fused_detections
+            )
+            rospy.loginfo(
+                f"=== Published fusion result with {len(fused_detections)} fused detections ==="
+            )
         else:
             rospy.logwarn("No fused detections generated - fusion list is empty")
-            # 发布空的融合结果消息（让可视化器知道融合过程完成了，但没有结果）
-            empty_fused_msg = DetectionsWithOdom()
-            empty_fused_msg.header = Header(stamp=rospy.Time.now(), frame_id="world")
-            empty_fused_msg.car_id = f"{self.current_vehicle_id}_fused"
 
-            from geometry_msgs.msg import Pose, Quaternion, Twist
-            from nav_msgs.msg import Odometry
+    def publish_fusion_result(
+        self, own_dets_list, all_other_vehicles_data, own_matches, fused_detections
+    ):
+        """发布完整的融合结果"""
+        current_time = rospy.Time.now()
 
+        # 创建融合结果消息
+        fusion_result = FusionResult()
+        fusion_result.header = Header(stamp=current_time, frame_id="world")
+        fusion_result.own_vehicle_id = self.current_vehicle_id
+
+        # 设置own检测结果 - 使用DetectionsWithOdom格式
+        own_detections_with_odom = DetectionsWithOdom()
+        own_detections_with_odom.header = Header(stamp=current_time, frame_id="world")
+        own_detections_with_odom.car_id = self.current_vehicle_id
+        own_detections_with_odom.detections = own_dets_list
+
+        # 创建默认里程计数据
+        from geometry_msgs.msg import Pose, Quaternion, Twist
+        from nav_msgs.msg import Odometry
+
+        odom = Odometry()
+        odom.header = Header(stamp=current_time, frame_id="world")
+        odom.child_frame_id = "base_link"
+        odom.pose.pose = Pose(
+            position=Point(x=0, y=0, z=0),
+            orientation=Quaternion(x=0, y=0, z=0, w=1),
+        )
+        odom.twist.twist = Twist()
+        own_detections_with_odom.odom = odom
+
+        fusion_result.own_detections_with_odom = own_detections_with_odom
+
+        # 设置other检测结果列表
+        other_detections_list = []
+        for vehicle_id, (
+            other_dets_list,
+            other_time,
+            time_diff,
+        ) in all_other_vehicles_data.items():
+            # 创建DetectionsWithOdom消息
+            other_detection_msg = DetectionsWithOdom()
+            other_detection_msg.header = Header(stamp=other_time, frame_id="world")
+            other_detection_msg.car_id = vehicle_id
+            other_detection_msg.detections = other_dets_list
+
+            # 创建默认里程计数据
             odom = Odometry()
-            odom.header = Header(stamp=rospy.Time.now(), frame_id="world")
+            odom.header = Header(stamp=other_time, frame_id="world")
             odom.child_frame_id = "base_link"
             odom.pose.pose = Pose(
                 position=Point(x=0, y=0, z=0),
                 orientation=Quaternion(x=0, y=0, z=0, w=1),
             )
             odom.twist.twist = Twist()
-            empty_fused_msg.odom = odom
-            empty_fused_msg.detections = []  # 空列表
+            other_detection_msg.odom = odom
 
-            # 不发布空结果，让可视化器等待非空结果
+            other_detections_list.append(other_detection_msg)
+
+        fusion_result.other_detections_list = other_detections_list
+
+        # 设置匹配结果信息
+        match_results = []
+        for own_idx, associated_detections in own_matches.items():
+            if associated_detections:  # 只为有关联的检测创建匹配结果
+                for vehicle_id, other_idx, match_score, _ in associated_detections:
+                    match_result = MatchResult()
+                    match_result.header = Header(stamp=current_time, frame_id="world")
+                    match_result.own_vehicle_id = self.current_vehicle_id
+                    match_result.other_vehicle_id = vehicle_id
+                    match_result.own_indices = [own_idx]
+                    match_result.other_indices = [other_idx]
+                    match_result.match_scores = [match_score]
+
+                    match_results.append(match_result)
+
+        fusion_result.match_results = match_results
+
+        # 设置融合后的检测结果 - 使用DetectionsWithOdom格式
+        fused_detections_with_odom = DetectionsWithOdom()
+        fused_detections_with_odom.header = Header(stamp=current_time, frame_id="world")
+        fused_detections_with_odom.car_id = f"{self.current_vehicle_id}_fused"
+        fused_detections_with_odom.detections = fused_detections
+        fused_detections_with_odom.odom = odom  # 使用同样的默认里程计
+
+        fusion_result.fused_detections = fused_detections_with_odom
+
+        # 发布融合结果
+        self.fusion_result_pub.publish(fusion_result)
+        rospy.loginfo(
+            f"Published fusion result: {len(own_dets_list)} own, "
+            f"{len(other_detections_list)} other vehicles, "
+            f"{len(match_results)} match results, "
+            f"{len(fused_detections)} fused"
+        )
 
     def _perform_graph_matching(self, own_dets_list, other_dets_list, vehicle_id):
         """执行图匹配并返回匹配结果"""
@@ -581,41 +659,6 @@ class DetectionFuser:
         fused_det.bbox_3d = fused_bbox_3d
 
         return fused_det
-
-    def _notify_visualizer_multi_matches(self, own_matches, all_other_vehicles_data):
-        """通过ROS消息发布多车匹配结果"""
-        try:
-            current_time = rospy.Time.now()
-
-            # 为每个车辆发布匹配关系
-            for vehicle_id in all_other_vehicles_data.keys():
-                own_indices = []
-                other_indices = []
-                match_scores = []
-
-                for own_idx, associations in own_matches.items():
-                    for v_id, other_idx, score, _ in associations:
-                        if v_id == vehicle_id:
-                            own_indices.append(own_idx)
-                            other_indices.append(other_idx)
-                            match_scores.append(score)
-
-                if own_indices:  # 只有存在匹配时才发布
-                    match_msg = MatchResult()
-                    match_msg.header = Header(stamp=current_time, frame_id="world")
-                    match_msg.own_vehicle_id = self.current_vehicle_id
-                    match_msg.other_vehicle_id = vehicle_id
-                    match_msg.own_indices = own_indices
-                    match_msg.other_indices = other_indices
-                    match_msg.match_scores = match_scores
-
-                    self.match_pub.publish(match_msg)
-                    rospy.logdebug(
-                        f"Published {len(own_indices)} matches for {vehicle_id}"
-                    )
-
-        except Exception as e:
-            rospy.logwarn(f"Failed to publish match results: {e}")
 
     # 移除原来的单车匹配方法，保留RPC调用的核心逻辑
     def _traditional_matching_approach(

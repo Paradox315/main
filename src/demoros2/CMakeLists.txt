@@ -15,6 +15,7 @@ add_message_files(
   Detections.msg
   DetectionsWithOdom.msg
   MatchResult.msg
+  FusionResult.msg
 )
 
 generate_messages(

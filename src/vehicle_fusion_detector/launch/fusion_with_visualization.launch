@@ -3,8 +3,8 @@
     <arg name="rpc_host" default="localhost" />
     <arg name="rpc_port" default="8000" />
     
-    <!-- Visualization Parameters - 适应3子图布局 -->
-    <arg name="figure_width" default="20" />
+    <!-- Visualization Parameters - 适应2x2布局 -->
+    <arg name="figure_width" default="16" />
     <arg name="figure_height" default="12" />
     <arg name="plot_range" default="20.0" />
     <arg name="dpi" default="300" />
@@ -46,7 +46,7 @@
         <param name="vehicle_id" value="vehicle_A" />
     </node>
     
-    <!-- Start Detection Visualizer with match line support -->
+    <!-- Start Detection Visualizer with 2x2 layout -->
     <node pkg="vehicle_fusion_detector" type="detection_visualizer.py" 
           name="detection_visualizer" output="screen">
         <param name="figure_width" value="$(arg figure_width)" />

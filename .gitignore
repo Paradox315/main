@@ -56,3 +56,4 @@ MANIFEST
 .DS_Store
 Thumbs.db
 visualization_output/
+global_visualization_output/
