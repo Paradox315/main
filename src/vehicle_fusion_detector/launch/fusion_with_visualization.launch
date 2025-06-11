@@ -4,14 +4,15 @@
     <arg name="rpc_port" default="8000" />
     
     <!-- Visualization Parameters - 适应3子图布局 -->
-    <arg name="figure_width" default="20" />  <!-- 更宽以容纳3个子图 -->
-    <arg name="figure_height" default="8" />  <!-- 适中的高度 -->
-    <arg name="plot_range" default="50.0" />
-    <arg name="dpi" default="100" />
+    <arg name="figure_width" default="20" />
+    <arg name="figure_height" default="12" />
+    <arg name="plot_range" default="20.0" />
+    <arg name="dpi" default="300" />
     <arg name="save_images" default="true" />
     <arg name="save_path" default="/home/huyaowen/catkin_ws/visualization_output" />
     <arg name="require_fused_results" default="true" />
     <arg name="wait_for_fusion_timeout" default="5.0" />
+    <arg name="subplot3_mode" default="union_filtered" />
     
     <!-- Start RPC Matching Server -->
     <node pkg="vehicle_fusion_detector" type="matching_rpc_server.py" 
@@ -45,7 +46,7 @@
         <param name="vehicle_id" value="vehicle_A" />
     </node>
     
-    <!-- Start Detection Visualizer with fusion result checking -->
+    <!-- Start Detection Visualizer with match line support -->
     <node pkg="vehicle_fusion_detector" type="detection_visualizer.py" 
           name="detection_visualizer" output="screen">
         <param name="figure_width" value="$(arg figure_width)" />
@@ -57,5 +58,6 @@
         <param name="save_interval" value="1.0" />
         <param name="require_fused_results" value="$(arg require_fused_results)" />
         <param name="wait_for_fusion_timeout" value="$(arg wait_for_fusion_timeout)" />
+        <param name="subplot3_mode" value="$(arg subplot3_mode)" />
     </node>
 </launch>

@@ -13,7 +13,7 @@ from geometry_msgs.msg import Point
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Header
 
-from demoros2.msg import Detections, DetectionsWithOdom  # 使用demoros2包中的消息
+from demoros2.msg import Detections, DetectionsWithOdom, MatchResult  # 添加MatchResult
 
 # 添加当前脚本目录到Python路径，以便导入graph_matching模块
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +60,9 @@ class DetectionFuser:
         # 发布器 - 添加融合检测结果发布器
         self.fused_pub = rospy.Publisher(
             "fused_detections", DetectionsWithOdom, queue_size=10
+        )
+        self.match_pub = rospy.Publisher(
+            "detection_matches", MatchResult, queue_size=10
         )
 
         self.other_detections_buffer = collections.defaultdict(
@@ -580,25 +583,39 @@ class DetectionFuser:
         return fused_det
 
     def _notify_visualizer_multi_matches(self, own_matches, all_other_vehicles_data):
-        """通知可视化器多车匹配结果"""
+        """通过ROS消息发布多车匹配结果"""
         try:
-            from detection_visualizer import get_visualizer
+            current_time = rospy.Time.now()
 
-            visualizer = get_visualizer()
-
-            # 为每个车辆整理匹配关系
+            # 为每个车辆发布匹配关系
             for vehicle_id in all_other_vehicles_data.keys():
-                vehicle_matches = []
+                own_indices = []
+                other_indices = []
+                match_scores = []
+
                 for own_idx, associations in own_matches.items():
                     for v_id, other_idx, score, _ in associations:
                         if v_id == vehicle_id:
-                            vehicle_matches.append((own_idx, other_idx))
+                            own_indices.append(own_idx)
+                            other_indices.append(other_idx)
+                            match_scores.append(score)
 
-                if vehicle_matches:
-                    visualizer.update_matches(vehicle_id, vehicle_matches)
+                if own_indices:  # 只有存在匹配时才发布
+                    match_msg = MatchResult()
+                    match_msg.header = Header(stamp=current_time, frame_id="world")
+                    match_msg.own_vehicle_id = self.current_vehicle_id
+                    match_msg.other_vehicle_id = vehicle_id
+                    match_msg.own_indices = own_indices
+                    match_msg.other_indices = other_indices
+                    match_msg.match_scores = match_scores
+
+                    self.match_pub.publish(match_msg)
+                    rospy.logdebug(
+                        f"Published {len(own_indices)} matches for {vehicle_id}"
+                    )
 
         except Exception as e:
-            rospy.logdebug(f"Could not update visualizer matches: {e}")
+            rospy.logwarn(f"Failed to publish match results: {e}")
 
     # 移除原来的单车匹配方法，保留RPC调用的核心逻辑
     def _traditional_matching_approach(
