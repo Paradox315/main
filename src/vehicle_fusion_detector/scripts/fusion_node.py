@@ -414,25 +414,22 @@ class DetectionFuser:
             associated_detections = own_matches[own_idx]
 
             if not associated_detections:
-                # 没有关联的检测，保留原始own检测
-                fused_det = self._copy_detection(own_det)
-                fused_det.object_id = f"own_only_{own_det.object_id}"
-                fused_detections.append(fused_det)
-                rospy.loginfo(
-                    f"  SOLO: Own[{own_idx}] -> No associations, kept as own_only"
+                # 没有关联的检测，跳过目标融合过程
+                rospy.logdebug(
+                    f"No associated detections for own detection {own_idx}, skipping fusion."
                 )
-            else:
-                # 有关联的检测，进行多检测融合
-                fused_det = self._fuse_multiple_detections(
-                    own_det, associated_detections, own_idx
-                )
-                fused_detections.append(fused_det)
+                continue
+            # 有关联的检测，进行多检测融合
+            fused_det = self._fuse_multiple_detections(
+                own_det, associated_detections, own_idx
+            )
+            fused_detections.append(fused_det)
 
-                vehicle_list = [item[0] for item in associated_detections]
-                rospy.loginfo(
-                    f"  FUSION: Own[{own_idx}] + {len(associated_detections)} others "
-                    f"from {vehicle_list} -> Fused[{fused_det.object_id}]"
-                )
+            vehicle_list = [item[0] for item in associated_detections]
+            rospy.loginfo(
+                f"  FUSION: Own[{own_idx}] + {len(associated_detections)} others "
+                f"from {vehicle_list} -> Fused[{fused_det.object_id}]"
+            )
 
         # 步骤3：发布完整的融合结果
         if fused_detections:
